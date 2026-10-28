@@ -1,0 +1,5 @@
+.pm-sync.local.md
+.pm-sync.log.md
+.pm-sync/
+node_modules/
+.DS_Store

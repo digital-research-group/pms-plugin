@@ -1,0 +1,12 @@
+{
+  "name": "drg-pms",
+  "owner": { "name": "Digital Research Group" },
+  "metadata": { "description": "Digital Research Group Project Management System plugins for Claude Code." },
+  "plugins": [
+    {
+      "name": "pms",
+      "source": "./plugins/pms",
+      "description": "Project Management System MCP connection, plus pm-sync hooks that keep a board in step with the git repository you work in."
+    }
+  ]
+}

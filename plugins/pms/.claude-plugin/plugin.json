@@ -1,0 +1,17 @@
+{
+  "name": "pms",
+  "version": "0.1.0",
+  "description": "Project Management System MCP connection, plus pm-sync hooks that keep a board in step with the git repository you work in.",
+  "author": { "name": "Digital Research Group" },
+  "homepage": "https://github.com/digital-research-group/pms-plugin",
+  "repository": "https://github.com/digital-research-group/pms-plugin",
+  "keywords": ["project-management", "mcp", "hooks", "board-sync"],
+  "userConfig": {
+    "mcp_url": {
+      "type": "string",
+      "title": "MCP address",
+      "description": "Leave as is if you are an organization owner or admin. Members: set the connection address an admin gave you (it ends in /c/<id>).",
+      "default": "https://pm.digitalresearchgroup.com/api/v1/platform-mcp"
+    }
+  }
+}
