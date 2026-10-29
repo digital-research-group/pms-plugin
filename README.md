@@ -24,14 +24,17 @@ Restart Claude Code, then open `/mcp` and sign in to `plugin:pms:pms`.
 ### Which MCP address to use
 
 The plugin connects to `https://pm.digitalresearchgroup.com/api/v1/platform-mcp` by
-default. Signing in there creates a new connection for you, and you choose its role and
-tools on the consent page. Only **organization owners and admins of client organizations,
-and the agency owner**, can approve that.
+default, and that works for everyone with an MCP account in the app:
 
-Everyone else connects through a connection an owner or admin made for them in the app's
-MCP tab: an agent connection that lists you as a manager. You can approve it only up to your
-own role; an agent with a higher role needs an organization owner to approve it. Set its
-address, which ends in `/c/<id>`:
+- **Organization owners and admins of client organizations, and the agency owner**: signing
+  in creates a new connection for you, and you choose its role and tools on the consent page.
+- **Members**: your MCP account is the agent connection an owner or admin set up in the app's
+  MCP tab and listed you as a manager of. Signing in connects to it, with its own role and
+  tools. Its role cannot be above yours; if it is, an organization owner must approve it.
+
+If you manage several agent connections, the default address cannot tell which one you
+mean and refuses the sign-in. Set the own address of the one to use, which ends in
+`/c/<id>` (copy it from the MCP tab):
 
 ```bash
 claude plugin configure pms
