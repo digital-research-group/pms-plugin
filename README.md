@@ -98,3 +98,8 @@ cd plugins/pms && node --test hooks/tests/*.test.mjs
 ```
 
 See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## License
+
+[MIT](LICENSE). The license covers this plugin's code only; using the Project Management
+System itself still needs an account and a connection from Digital Research Group.
