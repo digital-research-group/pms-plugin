@@ -123,9 +123,11 @@ claude plugin uninstall pms@drg-pms
 
 The hooks are plain Node.js with no dependencies (`plugins/pms/hooks`). They make no
 network calls: they read what Claude sent to and received from the board tools, and print
-instructions back to Claude. In a repository with sync on they write a small state file in
-`.git`, a log (`.pm-sync.log.md` by default, always a `.md` file outside `.git`) and a queue of
-failed board writes in `.pm-sync/outbox.jsonl`. The agent makes every board call, with your connection's
+instructions back to Claude. In a repository with sync on they write small state files in
+`.git` (a card mirror shared by the repository's worktrees, plus one file per checkout for
+its clocks), a log (`.pm-sync.log.md` by default, always a `.md` file outside `.git`) and a queue of
+failed board writes in `.pm-sync/outbox.jsonl`. Without a `.pm-sync.local.md` they exit
+before spawning git at all. The agent makes every board call, with your connection's
 permissions. The plugin holds no keys or tokens; signing in stores your own token in
 Claude Code.
 

@@ -27,10 +27,14 @@ Field-tested, in the order they tend to bite.
 ## The mirror
 
 - **It only knows what Claude wrote or read.** A card someone moved in the board UI is
-  invisible here until Claude touches that card again, so the session-start list can be
-  stale in exactly one direction: it may name a card that has since moved. Refresh the
-  active-lane cards with one `search` or `get_item` before editing. The log says it is a
-  local view for this reason.
+  invisible here until a read brings it back. `repo_context` refreshes every card linked
+  to the repository, so session start asks for one, and a prompt asks for a delta once the
+  view is 15 minutes old. A card that is not linked to the branch is refreshed with one
+  `get_item`; linking it is better. The log says it is a local view for this reason.
+- **Worktrees share the mirror, not the gates.** Every worktree of a repository sees the
+  same cards, but the edit gate, the staleness clock and the Stop check are per checkout:
+  a card another worktree took does not let this one edit, and its edits never block
+  this one's Stop.
 - **A card in another board cannot clear this board's gates.** A write whose response
   only names a different `boardId` is ignored outright: not mirrored, not logged, and it
   does not reset the staleness clock. If a gate will not clear, check that you wrote to
@@ -50,7 +54,13 @@ Field-tested, in the order they tend to bite.
   cannot clear itself, because its agent type has no connector grant. Relay its
   milestones through the lead and post them there.
 - **A re-entered Stop always passes** (`stop_hook_active`), so the gate can never loop.
-  It blocks once per new body of unrecorded work.
+  Stop blocks once per state of unrecorded work: after it blocks and you answer, later
+  turns pass until the tracked files or HEAD change again (or a board write records them).
+- **The check is about content, not timestamps.** Tracked files are compared with HEAD by
+  content, so a checkout, pull, merge, stash round trip or a formatter that changes
+  nothing is not work. Your own commits since the last board write are (the HEAD reflog
+  says which commits were made in this checkout), so a commit cannot hide work. A
+  read-only shell command (`ls`, `cat`, `rg`, `git status`, `git log`, ...) skips the check.
 - **Nothing outside `track` is seen.** If a gate seems not to fire, check the globs
   first: `*` does not cross a `/`, so `scripts/*builder*.mjs` does not match
   `scripts/x/builder.mjs`. Use `**` to cross directories.

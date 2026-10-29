@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -82,6 +82,11 @@ const outbox = (root) => (existsSync(join(root, OUTBOX))
   ? readFileSync(join(root, OUTBOX), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
   : [])
 const stateOf = (root) => JSON.parse(readFileSync(join(root, `.git/claude-pm-sync-${BOARD.slice(0, 8)}.json`), 'utf8'))
+// Clocks and HEAD at the last write are per checkout, in a file beside the shared mirror.
+const localOf = (root) => {
+  const name = readdirSync(join(root, '.git')).find((entry) => entry.startsWith(`claude-pm-sync-${BOARD.slice(0, 8)}-wt-`))
+  return JSON.parse(readFileSync(join(root, '.git', name), 'utf8'))
+}
 
 const itemJson = (status, id = 'item-aaaaaaaa', groupId = ACTIVE_GROUP) => JSON.stringify({
   item: { id, boardId: BOARD, groupId, status, untrusted_text: { name: 'Builder drag and drop' } },
@@ -305,14 +310,15 @@ test('a repo_context response stores the cursor, refreshes cards and drops gone 
     gone: ['item-bbbbbbbb'],
     truncated: false,
   }
-  assert.equal(run(root, 'post-tool', { ...repoContext(body), cwd: root }, { at: T0 + 30 * MINUTE }).stdout, '')
+  // The card this checkout put in In-progress now sits in QA: someone else moved it.
+  assert.match(context(run(root, 'post-tool', { ...repoContext(body), cwd: root }, { at: T0 + 30 * MINUTE })), /moved to QA on the board, not by this session/)
   const state = stateOf(root)
   assert.equal(state.syncedThrough, '2026-10-05T03:30:00.000Z')
   assert.equal(state.items['item-aaaaaaaa'].status, 'QA')
   assert.equal(state.items['item-aaaaaaaa'].groupId, QA_GROUP)
   assert.equal(state.items['item-aaaaaaaa'].name, 'Renamed card', 'board text is sanitised')
   assert.equal(state.items['item-bbbbbbbb'], undefined, 'a gone card leaves the mirror')
-  assert.equal(state.lastWriteAt, new Date(T0).toISOString(), 'a reconcile is a read, not a write')
+  assert.equal(localOf(root).lastWriteAt, new Date(T0).toISOString(), 'a reconcile is a read, not a write')
   const text = context(run(root, 'session-start', { cwd: root, source: 'compact' }, { at: T0 + 31 * MINUTE }))
   assert.match(text, /since "2026-10-05T03:30:00\.000Z"/)
 })
@@ -342,7 +348,7 @@ test('a repo_context item from another board is not mirrored here', () => {
 test('commits made after the last board write are reported at session start', () => {
   const root = checkout()
   run(root, 'post-tool', { ...write('In-progress'), cwd: root })
-  assert.equal(stateOf(root).headAtWrite, git(root, 'rev-parse', 'HEAD'))
+  assert.equal(localOf(root).headAtWrite, git(root, 'rev-parse', 'HEAD'))
   assert.doesNotMatch(context(run(root, 'session-start', { cwd: root })), /commits? since the last board write/)
   for (const n of [1, 2]) {
     writeFileSync(join(root, 'docs/notes.md'), `// ${n}\n`)
@@ -359,8 +365,8 @@ test('an unknown recorded sha, a repo with no commits, or no remote are skipped 
   assert.doesNotMatch(text, /remote "/)
   const other = checkout()
   run(other, 'post-tool', { ...write('In-progress'), cwd: other })
-  const file = join(other, `.git/claude-pm-sync-${BOARD.slice(0, 8)}.json`)
-  writeFileSync(file, JSON.stringify({ ...stateOf(other), headAtWrite: 'deadbeef'.repeat(5) }))
+  const name = readdirSync(join(other, '.git')).find((entry) => entry.startsWith(`claude-pm-sync-${BOARD.slice(0, 8)}-wt-`))
+  writeFileSync(join(other, '.git', name), JSON.stringify({ ...localOf(other), headAtWrite: 'deadbeef'.repeat(5) }))
   assert.doesNotMatch(context(run(other, 'session-start', { cwd: other })), /commits since/)
 })
 

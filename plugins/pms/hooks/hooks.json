@@ -13,6 +13,18 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pm-sync.mjs\" user-prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
@@ -27,7 +39,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__(items|files|create_item|update_item|move_item|add_comment|attach_file_from_url|get_item|search_items|search)|Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "matcher": "mcp__.*__(items|files|create_item|update_item|move_item|add_comment|attach_file_from_url|get_item|search_items|search|repo_context|link_item_github|update_item_github_link)|Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",

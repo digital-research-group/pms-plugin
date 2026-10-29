@@ -1,9 +1,14 @@
 // The local mirror: state file, tracked-file fingerprint, connector response parsing,
 // and the human-readable live log.
 //
-// The mirror holds only what Claude wrote or read through the connector in this
-// checkout. It is a cache for the hooks' own decisions, never a source of truth about
-// the board: a card moved in the board UI is invisible here until Claude touches it.
+// The mirror holds only what Claude wrote or read through the connector (and what
+// repo_context reported) in this repository. It is a cache for the hooks' own decisions,
+// never a source of truth about the board: a card moved in the board UI is invisible here
+// until a read brings it back.
+//
+// Two files: the card mirror is shared by every worktree of a repository, while the
+// clocks, fingerprints and nudges are per checkout (keyed by a hash of its root), so one
+// worktree's work can neither clear nor trip another's gates.
 //
 // Everything that arrives from the board (card names, comment bodies) is DATA. It is
 // stripped of control and escape sequences, collapsed and truncated on the way in, so
@@ -21,21 +26,58 @@ export const NAME_MAX = 120
 export const EXCERPT_MAX = 280
 export const WALK_DEPTH = 12
 export const WRITE_ACTIONS = new Set(['create_item', 'update_item', 'move_item', 'add_comment', 'attach_file_from_url'])
+export const SCAN_MAX_FILES = 2000
+export const HASH_MAX_BYTES = 1 << 20
+export const FILES_KEPT = 300
+export const SUBITEMS_MAX = 50
+export const LIST_MAX = 20
+// Per-checkout fields that older versions kept in the shared file.
+const LOCAL_KEYS = ['fingerprint', 'lastWriteAt', 'fingerprintAtWrite', 'headAtWrite', 'stopFingerprint', 'nudgedAt', 'staleNudgedAt', 'outboxNudgedAt', 'outboxDropped']
 
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
+// A hung git (a lock, a network filesystem) must not eat the hook's own timeout.
+const GIT_SCAN_TIMEOUT_MS = 3000
+
 function git(root, args) {
-  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 << 20 })
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 << 20, timeout: GIT_SCAN_TIMEOUT_MS })
 }
 
 /** State lives outside the work tree (the git common dir) so it is never committed or stashed. */
-export function stateFilePath(root, boardId) {
+export function stateFilePath(root, boardId, commonDir = null) {
   const key = String(boardId ?? '').slice(0, 8) || 'board'
+  if (commonDir) return join(commonDir, `claude-pm-sync-${key}.json`)
   try {
     const dir = git(root, ['rev-parse', '--git-common-dir']).trim()
     if (dir) return join(isAbsolute(dir) ? dir : join(root, dir), `claude-pm-sync-${key}.json`)
   } catch { /* Not a git checkout. */ }
   return join(root, '.claude/.pm-sync-state.json')
+}
+
+/** This checkout's own state file, beside the shared one. */
+export const localStateFilePath = (sharedFile, key) => sharedFile.replace(/\.json$/, `-wt-${key}.json`)
+
+/**
+ * This checkout's state: clocks, fingerprints, nudges, the cards it wrote to. A checkout
+ * with none yet takes over the per-checkout fields an older version kept in the shared
+ * file (saving both), and the cards that file's activity log says were written to. Its
+ * fingerprints were size and mtime hashes, so they are marked to be adopted, not compared.
+ */
+export function loadLocal(file, shared, sharedFile, key) {
+  let value = null
+  try { value = JSON.parse(readFileSync(file, 'utf8')) } catch { /* None yet. */ }
+  if (isMap(value)) return { ...value, key, wrote: isMap(value.wrote) ? value.wrote : {} }
+  const local = { key, wrote: {} }
+  const legacy = LOCAL_KEYS.filter((name) => shared[name] !== undefined)
+  if (legacy.length === 0) return local
+  for (const name of legacy) { local[name] = shared[name]; delete shared[name] }
+  for (const entry of shared.activity) {
+    if (typeof entry?.itemId === 'string' && !local.wrote[entry.itemId]) local.wrote[entry.itemId] = entry.at
+  }
+  local.adoptFingerprint = true
+  saveState(sharedFile, shared)
+  saveState(file, local)
+  return local
 }
 
 export function loadState(file) {
@@ -98,16 +140,65 @@ export function trackedFiles(root, patterns) {
   return [...found].sort()
 }
 
-/** Path, size and mtime of every tracked file: cheap, and it moves whenever the work moves. */
-export function fingerprint(root, patterns) {
-  const hash = createHash('sha256')
-  for (const path of trackedFiles(root, patterns)) {
-    try {
-      const stats = statSync(join(root, path))
-      hash.update(`${path}\0${stats.size}\0${Math.trunc(stats.mtimeMs)}\n`)
-    } catch { /* Vanished between listing and stat. */ }
+const sizeKey = (file) => {
+  try { const stats = statSync(file); return `s${stats.size}:${Math.trunc(stats.mtimeMs)}` } catch { return 'deleted' }
+}
+
+function contentKey(file) {
+  try {
+    const stats = statSync(file)
+    if (!stats.isFile()) return 'other'
+    if (stats.size > HASH_MAX_BYTES) return `s${stats.size}:${Math.trunc(stats.mtimeMs)}`
+    return createHash('sha1').update(readFileSync(file)).digest('hex')
+  } catch { return 'deleted' }
+}
+
+/** Tracked paths whose content differs from HEAD (staged, unstaged or untracked), from one git status. */
+function changedPaths(root, patterns) {
+  const specs = [...new Set(patterns.map(globPrefix))].map((prefix) => (prefix ? `:(literal)${prefix}` : '.'))
+  const out = git(root, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules', '--', ...specs])
+  const paths = []
+  for (const entry of out.split('\0')) {
+    const path = entry.length > 3 ? entry.slice(3) : ''
+    if (path && matchesAny(patterns, path)) paths.push(path)
   }
-  return hash.digest('hex')
+  return paths
+}
+
+/**
+ * What the tracked work looks like against HEAD: { fingerprint, files }, where files maps
+ * each changed tracked path to a hash of its content. A clean tree fingerprints the same
+ * whatever HEAD is, so a checkout, pull, merge or stash round trip, or a formatter that
+ * rewrites a file unchanged, moves nothing; a commit is caught separately (ownCommits).
+ * Past SCAN_MAX_FILES changed files, or for a file over HASH_MAX_BYTES, size and mtime
+ * stand in for the content; outside git, every tracked file is listed that way.
+ */
+export function scanTracked(root, patterns) {
+  const files = {}
+  if (Array.isArray(patterns) && patterns.length > 0) {
+    let changed = null
+    try { changed = changedPaths(root, patterns) } catch { /* Not a git checkout. */ }
+    if (changed === null) {
+      for (const path of trackedFiles(root, patterns)) files[path] = sizeKey(join(root, path))
+    } else {
+      const heavy = changed.length > SCAN_MAX_FILES
+      for (const path of changed) files[path] = heavy ? sizeKey(join(root, path)) : contentKey(join(root, path))
+    }
+  }
+  const hash = createHash('sha256')
+  for (const path of Object.keys(files).sort()) hash.update(`${path}\0${files[path]}\n`)
+  return { fingerprint: hash.digest('hex'), files }
+}
+
+export const fingerprint = (root, patterns) => scanTracked(root, patterns).fingerprint
+
+/** A file map small enough to keep in the state file, or null. */
+export const keptFiles = (files) => (Object.keys(files).length <= FILES_KEPT ? files : null)
+
+/** Tracked paths whose content differs between two scans, sorted. */
+export function changedBetween(before, after) {
+  const paths = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])
+  return [...paths].filter((path) => before?.[path] !== after?.[path]).sort()
 }
 
 // Built from strings so this file stays pure ASCII: the escapes are read by RegExp, not by the editor.
@@ -138,6 +229,17 @@ function payloads(response) {
   return []
 }
 
+/** A card's subtasks as { id, status, name }, board text sanitised. */
+function subitemsOf(list) {
+  return list.filter((sub) => isMap(sub) && typeof sub.id === 'string').slice(0, SUBITEMS_MAX).map((sub) => ({
+    id: sub.id,
+    status: typeof sub.status === 'string' ? sanitizeBoardText(sub.status, NAME_MAX) : null,
+    name: sanitizeBoardText(sub.untrusted_text?.name ?? sub.name, NAME_MAX),
+  }))
+}
+
+const PR_URL = /^https:\/\/[^\s"'<>]+\/pull\/\d+$/
+
 function collect(value, boardId, found, depth) {
   if (depth > WALK_DEPTH) return
   if (Array.isArray(value)) {
@@ -152,6 +254,7 @@ function collect(value, boardId, found, depth) {
         status: value.status,
         name: sanitizeBoardText(value.untrusted_text?.name, NAME_MAX),
         groupId: typeof value.groupId === 'string' ? value.groupId : null,
+        ...(Array.isArray(value.subitems) ? { subitems: subitemsOf(value.subitems) } : {}),
       })
     } else {
       found.foreignItems += 1
@@ -175,8 +278,11 @@ export function parseConnectorResponse(response, boardId) {
 }
 
 /**
- * A repo_context response: { match, cursor, items, gone }, or null when the response is not
- * one. Items are this board's only, with board text sanitised; ids in `gone` were deleted
+ * A repo_context response: { match, cursor, nextPage, items, gone, truncated }, or null
+ * when the response is not one. Items are this board's only, with board text sanitised,
+ * and carry what the mirror uses to tell whose card is whose: linked, assignedToMe, the
+ * linked branches, subtasks and pull requests. A field an older server does not send is
+ * left out, so it never clobbers what the mirror already knows. Ids in `gone` were deleted
  * or are no longer reachable, so they leave the mirror.
  */
 export function parseRepoContext(response, boardId) {
@@ -185,25 +291,53 @@ export function parseRepoContext(response, boardId) {
   const cursor = typeof body.cursor === 'string' && Number.isFinite(Date.parse(body.cursor)) ? body.cursor : null
   const items = (Array.isArray(body.items) ? body.items : [])
     .filter((item) => isMap(item) && typeof item.id === 'string' && typeof item.status === 'string' && item.boardId === boardId)
-    .map((item) => ({
-      id: item.id,
-      status: item.status,
-      name: sanitizeBoardText(item.untrusted_text?.name, NAME_MAX),
-      groupId: typeof item.groupId === 'string' ? item.groupId : null,
-    }))
+    .map((item) => {
+      const branches = item.untrusted_text?.branches
+      return {
+        id: item.id,
+        status: item.status,
+        name: sanitizeBoardText(item.untrusted_text?.name, NAME_MAX),
+        groupId: typeof item.groupId === 'string' ? item.groupId : null,
+        ...(typeof item.linked === 'boolean' ? { linked: item.linked } : {}),
+        ...(typeof item.assignedToMe === 'boolean' ? { assignedToMe: item.assignedToMe } : {}),
+        ...(Array.isArray(branches) ? { branches: branches.filter((name) => typeof name === 'string').slice(0, LIST_MAX).map((name) => sanitizeBoardText(name, 255)) } : {}),
+        ...(Array.isArray(item.subitems) ? { subitems: subitemsOf(item.subitems) } : {}),
+        ...(Array.isArray(item.pullRequests)
+          ? { pullRequests: item.pullRequests.map((pr) => pr?.url).filter((url) => typeof url === 'string' && PR_URL.test(url)).slice(0, LIST_MAX) }
+          : {}),
+      }
+    })
   const gone = (Array.isArray(body.gone) ? body.gone : []).filter((id) => typeof id === 'string')
-  return { match: body.match, cursor, items, gone, truncated: body.truncated === true }
+  const nextPage = typeof body.nextPage === 'string' && /^[A-Za-z0-9._~:+/=-]{1,512}$/.test(body.nextPage) ? body.nextPage : null
+  return { match: body.match, cursor, nextPage, items, gone, truncated: body.truncated === true }
 }
 
 // A lane is a group, and its name can differ from the status text ("In Progress" vs "In-progress"),
 // so a recorded groupId decides; the status is the fallback for a row recorded without one.
 const inLane = (row, name, id) => (typeof row?.groupId === 'string' && id ? row.groupId === id : row?.status === name)
 
-/** Cards this checkout last recorded in the active lane, recently enough to still believe. */
+/** Cards the mirror last saw in the active lane, recently enough to still believe, whoever works on them. */
 export function activeCards(state, config, now) {
   return Object.entries(state.items ?? {})
     .filter(([, row]) => inLane(row, config.activeLane, config.activeLaneId) && now - Date.parse(row.at) < ACTIVE_TTL_MS)
 }
+
+/**
+ * The active-lane cards that are THIS session's, the ones that open the edit gate here:
+ * cards this checkout wrote to, and cards linked to the branch it is on. Only when there
+ * are none does a card assigned to the person count, and not one another checkout last
+ * wrote to. Another agent's card, in another worktree or on another branch, never counts.
+ */
+export function sessionCards(state, local, config, now, branch) {
+  const lane = activeCards(state, config, now)
+  const mine = lane.filter(([id, row]) => local.wrote?.[id] || (branch && Array.isArray(row.branches) && row.branches.includes(branch)))
+  if (mine.length > 0) return mine
+  return lane.filter(([, row]) => row.assignedToMe === true && !(row.by && row.by !== local.key))
+}
+
+const DONE_STATUS = /^(done|complete|completed|finished|closed|merged|shipped)$/i
+/** A card's subtasks that are not done yet. */
+export const openSubtasks = (row) => (Array.isArray(row?.subitems) ? row.subitems.filter((sub) => !DONE_STATUS.test(String(sub.status ?? '').trim())) : [])
 
 // Separators are built from code points so this file stays pure ASCII.
 const DOT = String.fromCharCode(0xb7)
