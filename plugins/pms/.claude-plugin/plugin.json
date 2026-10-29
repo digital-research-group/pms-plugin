@@ -1,6 +1,6 @@
 {
   "name": "pms",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Project Management System MCP connection, plus pm-sync hooks that keep a board in step with the git repository you work in.",
   "author": {
     "name": "Digital Research Group"

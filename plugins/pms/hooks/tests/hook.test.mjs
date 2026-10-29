@@ -305,6 +305,8 @@ test('Stop adopts the first time, blocks once work moves past the last write, an
   const blocked = run(root, 'stop', {}, { at: T0 + 2 * MINUTE })
   assert.match(blockedReason(blocked), /changed after the last Acme Web board write/)
   assert.match(blockedReason(blocked), /MY OWN BOARD RULES/, 'the rules body rides the block')
+  assert.match(blockedReason(blocked), /check off its subtasks that are done/, 'subtasks are kept current')
+  assert.match(blockedReason(blocked), /parentItemId/, 'leftover work on a card becomes its subtask')
   assert.equal(run(root, 'stop', { stop_hook_active: true }, { at: T0 + 3 * MINUTE }).stdout, '', 'a re-entered Stop can never loop')
 })
 

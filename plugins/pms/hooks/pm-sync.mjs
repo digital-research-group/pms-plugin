@@ -217,7 +217,8 @@ function staleMessage(config, state, now, since, verifying) {
 function stopMessage(config) {
   return `Tracked work changed after the last ${config.board.name} board write. Before finishing, sync it with the board connector:`
     + ' move each item you worked on to the lane it is really in (setting Status and groupId), add a comment with the evidence'
-    + ' (tests, files, commands), and create a card for every newly found task or follow-up.'
+    + ' (tests, files, commands), check off its subtasks that are done (repo_context lists them) and add a subtask'
+    + ' (create_item with parentItemId) for work left on it, and create a card for every newly found task or follow-up.'
     + ` If nothing on the board actually changed, say so in one line and stop.\n\n${rules(config)}`
 }
 
