@@ -10,8 +10,8 @@ const HOOKS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILL_DIR = join(HOOKS_DIR, '..')
 const INSTALL = join(HOOKS_DIR, 'install.mjs')
 const TEMPLATE = join(SKILL_DIR, 'settings.hooks.json')
-const EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop']
-const MODES = { SessionStart: 'session-start', PreToolUse: 'pre-tool', PostToolUse: 'post-tool', PostToolUseFailure: 'post-tool-failure', Stop: 'stop' }
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop']
+const MODES = { SessionStart: 'session-start', UserPromptSubmit: 'user-prompt', PreToolUse: 'pre-tool', PostToolUse: 'post-tool', PostToolUseFailure: 'post-tool-failure', Stop: 'stop' }
 
 /** An unrelated settings file: other hooks, and settings that must survive untouched. */
 const EXISTING = {
@@ -52,7 +52,7 @@ function read(file) {
 const commandsOf = (settings, event) => (settings.hooks?.[event] ?? []).flatMap((block) => block.hooks.map((hook) => hook.command))
 const pmCommands = (settings) => EVENTS.flatMap((event) => commandsOf(settings, event)).filter((command) => command.includes('pm-sync.mjs'))
 
-test('the shipped settings.hooks.json registers exactly the five events, and every mode exists in the script', () => {
+test('the shipped settings.hooks.json registers exactly the six events, and every mode exists in the script', () => {
   const template = JSON.parse(readFileSync(TEMPLATE, 'utf8'))
   assert.deepEqual(Object.keys(template), ['hooks'])
   assert.deepEqual(Object.keys(template.hooks).sort(), [...EVENTS].sort())
@@ -76,6 +76,18 @@ test('the shipped settings.hooks.json registers exactly the five events, and eve
   assert.equal(template.hooks.Stop[0].matcher, '')
 })
 
+test('the plugin hooks.json registers the same events and modes as the template, and sees repo links and repo_context', () => {
+  const plugin = JSON.parse(readFileSync(join(HOOKS_DIR, 'hooks.json'), 'utf8'))
+  assert.deepEqual(Object.keys(plugin.hooks).sort(), [...EVENTS].sort())
+  for (const event of EVENTS) assert.match(plugin.hooks[event][0].hooks[0].command, new RegExp(`pm-sync\\.mjs" ${MODES[event]}$`), event)
+  const template = JSON.parse(readFileSync(TEMPLATE, 'utf8'))
+  for (const matcher of [plugin.hooks.PostToolUse[0].matcher, template.hooks.PostToolUse[0].matcher]) {
+    for (const tool of ['repo_context', 'link_item_github', 'update_item_github_link']) {
+      assert.ok(new RegExp(`^(?:${matcher})$`).test(`mcp__pms__${tool}`), `${tool} is seen by ${matcher}`)
+    }
+  }
+})
+
 test('every mode the template names runs and exits 0', () => {
   for (const mode of Object.values(MODES)) {
     const result = spawnSync(process.execPath, [join(HOOKS_DIR, 'pm-sync.mjs'), mode], { input: '{}', encoding: 'utf8' })
@@ -89,7 +101,7 @@ test('install creates a settings file that does not exist yet', () => {
   assert.equal(result.code, 0, result.stderr)
   const settings = read(file)
   assert.deepEqual(Object.keys(settings.hooks).sort(), [...EVENTS].sort())
-  assert.equal(pmCommands(settings).length, 5)
+  assert.equal(pmCommands(settings).length, 6)
   for (const event of EVENTS) assert.match(commandsOf(settings, event)[0], new RegExp(`pm-sync\\.mjs" ${MODES[event]}$`))
   assert.match(result.stdout, /install/i)
 })
@@ -108,12 +120,12 @@ test('install preserves every unrelated hook and setting', () => {
   assert.equal(install(file).code, 0)
   const settings = read(file)
   assert.deepEqual(settings.permissions, EXISTING.permissions, 'unrelated settings survive')
-  assert.deepEqual(settings.hooks.UserPromptSubmit, EXISTING.hooks.UserPromptSubmit, 'an unrelated event survives')
+  assert.deepEqual(settings.hooks.UserPromptSubmit[0], EXISTING.hooks.UserPromptSubmit[0], 'an unrelated hook on a shared event survives, first')
   assert.equal(commandsOf(settings, 'PreToolUse').includes('security-gate.sh'), true, 'the security gate survives')
   assert.equal(commandsOf(settings, 'Stop').includes('node notifier.cjs stop'), true, 'the notifier survives')
   assert.equal(settings.hooks.PreToolUse.length, 2, 'pm-sync is appended, not substituted')
   assert.equal(settings.hooks.Stop.length, 2)
-  assert.equal(pmCommands(settings).length, 5)
+  assert.equal(pmCommands(settings).length, 6)
   assert.equal(settings.hooks.Stop[0].hooks[0].command, 'node notifier.cjs stop', 'existing blocks keep their order')
 })
 
@@ -139,7 +151,7 @@ test('a partial install is repaired without duplicating what is there', () => {
   writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`)
   assert.equal(install(file).code, 0)
   const repaired = read(file)
-  assert.equal(pmCommands(repaired).length, 5)
+  assert.equal(pmCommands(repaired).length, 6)
   assert.equal(commandsOf(repaired, 'SessionStart').length, 1, 'the surviving event is not duplicated')
 })
 
@@ -160,7 +172,7 @@ test('--replace-legacy swaps the legacy hook for pm-sync and keeps unrelated hoo
   assert.equal(result.code, 0, result.stderr)
   const settings = read(file)
   assert.equal(JSON.stringify(settings).includes('pm-board-sync.mjs'), false, 'no legacy command remains')
-  assert.equal(pmCommands(settings).length, 5)
+  assert.equal(pmCommands(settings).length, 6)
   assert.equal(commandsOf(settings, 'Stop').includes('node notifier.cjs stop'), true, 'the unrelated Stop hook survives')
   assert.match(result.stdout, /legacy/i)
 })
@@ -263,7 +275,7 @@ test('--settings may be omitted: the project default is .claude/settings.json un
   const result = spawnSync(process.execPath, [INSTALL], { cwd: root, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const settings = read(join(root, '.claude/settings.json'))
-  assert.equal(pmCommands(settings).length, 5)
+  assert.equal(pmCommands(settings).length, 6)
 })
 
 test('install reports the file it wrote and how to undo it', () => {
@@ -275,9 +287,9 @@ test('install reports the file it wrote and how to undo it', () => {
 
 // --- clients ---------------------------------------------------------------------------
 
-const CODEX_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop']
+const CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
 
-test('--client codex writes .codex/hooks.json with four events, explicit --client codex, and no PostToolUseFailure', () => {
+test('--client codex writes .codex/hooks.json with five events, explicit --client codex, and no PostToolUseFailure', () => {
   const root = mkdtempSync(join(tmpdir(), 'pm-sync-install-codex-'))
   const result = spawnSync(process.execPath, [INSTALL, '--client', 'codex'], { cwd: root, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
@@ -332,7 +344,7 @@ test('--client grok installs the Claude registration unchanged, with no --client
 test('--client grok defaults to .claude/settings.json, the file Grok reads', () => {
   const root = mkdtempSync(join(tmpdir(), 'pm-sync-install-grok-'))
   assert.equal(spawnSync(process.execPath, [INSTALL, '--client', 'grok'], { cwd: root, encoding: 'utf8' }).status, 0)
-  assert.equal(pmCommands(read(join(root, '.claude/settings.json'))).length, 5)
+  assert.equal(pmCommands(read(join(root, '.claude/settings.json'))).length, 6)
 })
 
 test('an unknown --client is refused with usage', () => {

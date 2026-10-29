@@ -69,8 +69,9 @@ log: .pm-sync.log.md
 ## Board rules
 
 Everything below the frontmatter is yours. The hooks inject it verbatim at session
-start, in the Stop message and in a staleness nudge, after a generated header carrying
-the board name, id, url, the lane list and the active lane. Edit it freely: these are
+start, after a generated header carrying the board name, id, url, the lane list and the
+active lane (a header rule these rules already state is left out). The Stop message
+carries only a short header and points back here. Edit it freely: these are
 the generic rules, and your project's own belong here too.
 
 - Update the board in real time, one transition per call, as it happens. Never batch
