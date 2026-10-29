@@ -341,7 +341,7 @@ test('F: an opened PR asks to move the card to the review lane and link the PR, 
   run(root, 'post-tool', write('In-progress'))
   run(root, 'stop')
   const text = context(run(root, 'post-tool', bash('gh pr create --fill', `${PR}\n`), { at: T0 + MINUTE }))
-  assert.match(text, new RegExp(PR.replace(/[/.]/g, '\\$&')))
+  assert.ok(text.includes(PR), 'names the PR url')
   assert.match(text, /QA/)
   assert.match(text, new RegExp(QA_GROUP))
   assert.match(text, /link_item_github|update_item_github_link/)
